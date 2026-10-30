@@ -241,4 +241,269 @@ input[type="date"]::-webkit-date-and-time-value{text-align:left}
               </div>
               <div class="sign">
                 <span class="lbl">FIRMA DE RECIBIDO</span>
-                <div
+                <div class="area"><span class="sigtext" id="pFirma"></span><img id="pFirmaImg" alt="Firma" hidden></div>
+                <div class="cc"><span class="lbl">C.C./NIT</span><span class="val" id="pCc"></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="bar">
+  <button id="btnNuevo" type="button">Nuevo recibo</button>
+  <button id="btnImg" type="button">Guardar imagen</button>
+  <button id="btnPdf" type="button" class="primary">Guardar PDF</button>
+  <button id="btnPrint" type="button">Imprimir</button>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div id="exportHost"></div>
+
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const FONTS = [
+    {name:"Great Vibes", css:"'Great Vibes', cursive", scale:1},
+    {name:"Allura", css:"'Allura', cursive", scale:1.05},
+    {name:"Dancing Script", css:"'Dancing Script', cursive", scale:.85},
+    {name:"Homemade Apple", css:"'Homemade Apple', cursive", scale:.62},
+    {name:"Mr De Haviland", css:"'Mr De Haviland', cursive", scale:1.15}
+  ];
+  const store = {
+    get(k,d){try{const v=localStorage.getItem("rcm:"+k);return v==null?d:JSON.parse(v)}catch(e){return d}},
+    set(k,v){try{localStorage.setItem("rcm:"+k,JSON.stringify(v))}catch(e){}}
+  };
+
+  // ---------- Número a letras (español, pesos colombianos) ----------
+  const U=["","UNO","DOS","TRES","CUATRO","CINCO","SEIS","SIETE","OCHO","NUEVE","DIEZ","ONCE","DOCE","TRECE","CATORCE","QUINCE","DIECISÉIS","DIECISIETE","DIECIOCHO","DIECINUEVE","VEINTE","VEINTIUNO","VEINTIDÓS","VEINTITRÉS","VEINTICUATRO","VEINTICINCO","VEINTISÉIS","VEINTISIETE","VEINTIOCHO","VEINTINUEVE"];
+  const D=["","","","TREINTA","CUARENTA","CINCUENTA","SESENTA","SETENTA","OCHENTA","NOVENTA"];
+  const C=["","CIENTO","DOSCIENTOS","TRESCIENTOS","CUATROCIENTOS","QUINIENTOS","SEISCIENTOS","SETECIENTOS","OCHOCIENTOS","NOVECIENTOS"];
+  function apoc(s){return s.replace(/VEINTIUNO$/,"VEINTIÚN").replace(/UNO$/,"UN")}
+  function n999(n){
+    if(n===0)return"";
+    if(n===100)return"CIEN";
+    const c=Math.floor(n/100), r=n%100; let out=C[c];
+    let t="";
+    if(r<30)t=U[r]; else {t=D[Math.floor(r/10)]; if(r%10)t+=" Y "+U[r%10];}
+    return (out+" "+t).trim();
+  }
+  function n999999(n){
+    const m=Math.floor(n/1000), r=n%1000; let out="";
+    if(m===1)out="MIL"; else if(m>1)out=apoc(n999(m))+" MIL";
+    return (out+" "+n999(r)).trim();
+  }
+  function aLetras(n){
+    n=Math.floor(n||0);
+    if(n===0)return"CERO PESOS M/CTE";
+    const mm=Math.floor(n/1e6), r=n%1e6; let out="";
+    if(mm===1)out="UN MILLÓN"; else if(mm>1)out=apoc(n999999(mm))+" MILLONES";
+    const rest=n999999(r);
+    out=(out+" "+rest).trim();
+    if(n===1)return"UN PESO M/CTE";
+    if(r===0&&mm>0)return out+" DE PESOS M/CTE";
+    return apoc(out)+" PESOS M/CTE";
+  }
+
+  // ---------- Estado ----------
+  const fields=["fecha","numero","pagado","valor","concepto","codigo","aprobado","firmaNombre","cc"];
+  let sigFont=store.get("font2",5), ink=store.get("ink","#14306b"), firmaTocada=false;
+
+  function today(){const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")}
+  function fmtFecha(v){
+    if(!v)return"";const [y,m,d]=v.split("-").map(Number);
+    const meses=["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+    return d+" de "+meses[m-1]+" de "+y;
+  }
+  function num(v){return parseInt(String(v).replace(/\D/g,""),10)||0}
+  function fmtMoney(n){return n?n.toLocaleString("es-CO"):""}
+
+  function load(){
+    const draft=store.get("draft",{});
+    fields.forEach(f=>{ if(draft[f]!=null) $(f).value=draft[f]; });
+    if(!$("fecha").value)$("fecha").value=today();
+    if(!$("numero").value)$("numero").value=String(store.get("next",1)).padStart(4,"0");
+    firmaTocada=!!draft._firmaTocada;
+  }
+  function saveDraft(){
+    const d={};fields.forEach(f=>d[f]=$(f).value);d._firmaTocada=firmaTocada;store.set("draft",d);
+  }
+
+  function sigName(){return ($("firmaNombre").value||$("pagado").value||"").trim()}
+
+  function renderSigs(){
+    const name=sigName()||"Tu nombre";
+    const cur=$("sigCurrent");
+    if(sigFont===5){cur.textContent="✍️ Con el dedo";cur.className="";cur.style.fontFamily="";cur.style.fontSize="";cur.style.color="";}
+    else{const cf=FONTS[sigFont]||FONTS[0];cur.textContent=name;cur.className="cur";cur.style.fontFamily=cf.css;cur.style.fontSize=(1.6*cf.scale)+"rem";cur.style.color=ink;}
+    const box=$("sigs");box.innerHTML="";
+    FONTS.forEach((f,i)=>{
+      const b=document.createElement("button");b.type="button";b.className="sig";
+      b.setAttribute("aria-pressed",String(i===sigFont));
+      const s=document.createElement("span");s.className="s";s.style.fontFamily=f.css;s.style.fontSize=(1.9*f.scale)+"rem";s.style.color=ink;s.textContent=name;
+      const sm=document.createElement("small");sm.textContent=f.name;
+      b.append(s,sm);
+      b.onclick=()=>{sigFont=i;store.set("font2",i);setSigs(false);renderSigs();render()};
+      box.appendChild(b);
+    });
+    const d=document.createElement("button");d.type="button";d.className="sig";d.setAttribute("aria-pressed",String(sigFont===5));
+    const ds=document.createElement("span");ds.className="s";ds.style.fontSize="1.05rem";ds.style.fontWeight="700";ds.textContent="✍️ Firmar con el dedo";
+    d.append(ds);d.onclick=()=>{sigFont=5;store.set("font2",5);setSigs(false);renderSigs();render()};
+    box.appendChild(d);
+    $("padWrap").hidden=sigFont!==5;
+    if(sigFont===5)requestAnimationFrame(sizePad);
+  }
+
+  function render(){
+    const v=num($("valor").value);
+    $("pFecha").textContent=fmtFecha($("fecha").value);
+    $("pNumero").textContent=$("numero").value;
+    $("pPagado").textContent=$("pagado").value;
+    $("pValor").textContent=fmtMoney(v);
+    $("pConcepto").textContent=$("concepto").value;
+    const letras=v?aLetras(v):"";
+    $("pLetras").textContent=letras;
+    $("wordsHint").textContent=letras;
+    $("pCodigo").textContent=$("codigo").value;
+    $("pAprobado").textContent=$("aprobado").value;
+    $("pCc").textContent=$("cc").value;
+    const f=FONTS[sigFont]||FONTS[0], size=num($("sigSize").value)/100;
+    const sg=$("pFirma");sg.textContent=sigName();sg.style.fontFamily=f.css;sg.style.color=ink;
+    sg.style.fontSize=Math.round(54*f.scale*size)+"px";
+    const im=$("pFirmaImg"), drawMode=sigFont===5;
+    sg.hidden=drawMode; im.hidden=!drawMode||!strokes.length;
+    if(drawMode&&strokes.length){im.src=sigImage();im.style.height=Math.round(80*size)+"px";}
+    fit();saveDraft();
+  }
+
+  function fit(){
+    const stage=$("stage"), sc=$("scaler"), r=$("receipt");
+    const avail=stage.clientWidth-20; const k=Math.min(1,avail/900);
+    sc.style.transform="scale("+k+")";
+    sc.style.height=(r.offsetHeight*k)+"px";
+    sc.style.width="900px";
+  }
+
+  function setSigs(open){$("sigs").hidden=!open;const t=$("sigToggle");t.setAttribute("aria-expanded",String(open));t.querySelector(".chev").textContent=open?"Ocultar estilos":"Mostrar estilos"}
+  $("sigToggle").onclick=()=>setSigs($("sigs").hidden);
+
+  // ---------- Firma a mano ----------
+  let strokes=store.get("strokes",[]), current=null;
+  const pad=$("pad");
+  function sizePad(){const r=pad.getBoundingClientRect();if(!r.width)return;const dpr=window.devicePixelRatio||1;pad.width=r.width*dpr;pad.height=r.height*dpr;drawPad()}
+  function drawStrokes(ctx,W,list,lw){
+    ctx.lineCap="round";ctx.lineJoin="round";ctx.strokeStyle=ink;ctx.lineWidth=lw;
+    list.forEach(s=>{if(!s.length)return;ctx.beginPath();ctx.moveTo(s[0][0]*W,s[0][1]*W);
+      if(s.length===1)ctx.lineTo(s[0][0]*W+0.5,s[0][1]*W);
+      for(let i=1;i<s.length-1;i++){const mx=(s[i][0]+s[i+1][0])/2*W,my=(s[i][1]+s[i+1][1])/2*W;ctx.quadraticCurveTo(s[i][0]*W,s[i][1]*W,mx,my)}
+      if(s.length>1){const l=s[s.length-1];ctx.lineTo(l[0]*W,l[1]*W)}
+      ctx.stroke()});
+  }
+  function drawPad(){
+    $("padWrap").classList.toggle("empty",!strokes.length&&!current);
+    $("padOpenBtn").textContent=strokes.length?"Editar firma":"Toca aquí para firmar";
+    const ctx=pad.getContext("2d"),dpr=window.devicePixelRatio||1;ctx.clearRect(0,0,pad.width,pad.height);
+    ctx.strokeStyle="#c9d3cc";ctx.lineWidth=dpr;ctx.beginPath();ctx.moveTo(pad.width*.06,pad.height*.75);ctx.lineTo(pad.width*.94,pad.height*.75);ctx.stroke();
+    drawStrokes(ctx,pad.width,current?strokes.concat([current]):strokes,pad.width*0.007);
+  }
+  function pt(e){const r=pad.getBoundingClientRect();return[(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.width]}
+  pad.addEventListener("pointerdown",e=>{if(!$("padWrap").classList.contains("open"))return;e.preventDefault();try{pad.setPointerCapture(e.pointerId)}catch(_){}current=[pt(e)];drawPad()});
+  pad.addEventListener("pointermove",e=>{if(!current)return;e.preventDefault();current.push(pt(e));drawPad()});
+  const endStroke=()=>{if(!current)return;strokes.push(current.map(p=>[+p[0].toFixed(4),+p[1].toFixed(4)]));current=null;store.set("strokes",strokes);drawPad();render()};
+  pad.addEventListener("pointerup",endStroke);pad.addEventListener("pointercancel",endStroke);
+  $("padClear").onclick=()=>{strokes=[];store.set("strokes",strokes);drawPad();render()};
+  $("padUndo").onclick=()=>{strokes.pop();store.set("strokes",strokes);drawPad();render()};
+  $("padOpenBtn").onclick=()=>{$("padWrap").classList.add("open");document.body.style.overflow="hidden";requestAnimationFrame(sizePad)};
+  $("padDone").onclick=()=>{$("padWrap").classList.remove("open");document.body.style.overflow="";requestAnimationFrame(sizePad);render()};
+  window.addEventListener("resize",()=>{if(sigFont===5)sizePad()});
+  function sigImage(){
+    const W=1200;let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+    strokes.forEach(s=>s.forEach(([x,y])=>{minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y)}));
+    const lw=W*0.007,m=lw*2,c=document.createElement("canvas");
+    c.width=Math.max(10,Math.ceil((maxX-minX)*W+m*2));c.height=Math.max(10,Math.ceil((maxY-minY)*W+m*2));
+    const ctx=c.getContext("2d");ctx.translate(-minX*W+m,-minY*W+m);
+    drawStrokes(ctx,W,strokes,lw);return c.toDataURL("image/png");
+  }
+
+  // ---------- Eventos ----------
+  $("valor").addEventListener("input",e=>{
+    const n=num(e.target.value); e.target.value=fmtMoney(n); render();
+  });
+  $("firmaNombre").addEventListener("input",()=>{firmaTocada=true;renderSigs();render()});
+  $("pagado").addEventListener("input",()=>{renderSigs();render()});
+  ["fecha","numero","concepto","codigo","aprobado","cc","sigSize"].forEach(id=>$(id).addEventListener("input",render));
+  document.querySelectorAll(".ink").forEach(b=>b.addEventListener("click",()=>{
+    ink=b.dataset.ink;store.set("ink",ink);
+    document.querySelectorAll(".ink").forEach(x=>x.setAttribute("aria-pressed",String(x===b)));
+    renderSigs();render();
+  }));
+  window.addEventListener("resize",fit);
+
+  $("btnNuevo").onclick=()=>{
+    const cur=num($("numero").value)||store.get("next",1);
+    store.set("next",cur+1);
+    ["pagado","valor","concepto","firmaNombre","cc"].forEach(id=>$(id).value="");
+    $("numero").value=String(cur+1).padStart(4,"0");
+    $("fecha").value=today();firmaTocada=false;strokes=[];store.set("strokes",strokes);
+    renderSigs();render();toast("Recibo No. "+$("numero").value+" listo para llenar");
+    window.scrollTo({top:0,behavior:"smooth"});
+  };
+
+  // ---------- Exportar ----------
+  function toast(msg){const t=$("toast");t.textContent=msg;t.classList.add("show");clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove("show"),2800)}
+
+  async function snapshot(){
+    await document.fonts.ready;
+    const host=$("exportHost");host.innerHTML="";
+    const clone=$("receipt").cloneNode(true);clone.removeAttribute("id");
+    clone.querySelectorAll("[id]").forEach(n=>n.removeAttribute("id"));
+    host.appendChild(clone);
+    const canvas=await html2canvas(clone,{scale:3,backgroundColor:"#ffffff",useCORS:true,logging:false});
+    host.innerHTML="";
+    return canvas;
+  }
+  function fileBase(){
+    const n=$("numero").value||"recibo";
+    const p=($("pagado").value||"").trim().replace(/[^\p{L}\p{N} ]/gu,"").replace(/\s+/g,"-");
+    return "Recibo-"+n+(p?"-"+p:"");
+  }
+  async function guardar(tipo){
+    const btns=[$("btnImg"),$("btnPdf")];btns.forEach(b=>b.disabled=true);
+    try{
+      const canvas=await snapshot();let blob,name;
+      if(tipo==="pdf"){
+        const {jsPDF}=window.jspdf;
+        const pdf=new jsPDF({orientation:"landscape",unit:"mm",format:"letter"});
+        const pw=pdf.internal.pageSize.getWidth(), m=14, w=pw-m*2, h=w*canvas.height/canvas.width;
+        pdf.addImage(canvas.toDataURL("image/jpeg",0.95),"JPEG",m,m,w,h);
+        blob=pdf.output("blob");name=fileBase()+".pdf";
+      }else{
+        blob=await new Promise(r=>canvas.toBlob(r,"image/png"));name=fileBase()+".png";
+      }
+      const file=new File([blob],name,{type:blob.type});
+      if(navigator.canShare&&navigator.canShare({files:[file]})){
+        try{await navigator.share({files:[file],title:name});toast("Listo: "+name);}
+        catch(err){if(err&&err.name!=="AbortError")throw err;}
+        return;
+      }
+      const url=URL.createObjectURL(blob);const a=document.createElement("a");
+      a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),4000);
+      toast("Descargado: "+name);
+    }catch(e){
+      toast("No se pudo guardar el archivo. Intenta con Imprimir.");
+    }finally{btns.forEach(b=>b.disabled=false)}
+  }
+  $("btnPdf").onclick=()=>guardar("pdf");
+  $("btnImg").onclick=()=>guardar("png");
+  $("btnPrint").onclick=()=>{
+    try{window.print()}catch(e){toast("Tu navegador no permite imprimir desde aquí. Guarda el PDF e imprímelo.")}
+  };
+
+  load();renderSigs();render();
+  document.fonts.ready.then(()=>{renderSigs();render()});
+})();
+</script>
+</body>
+</html>
